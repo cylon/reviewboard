@@ -4,6 +4,7 @@ import re
 import subprocess
 import urllib2
 import urlparse
+import base64
 
 # Python 2.5+ provides urllib2.quote, whereas Python 2.4 only
 # provides urllib.quote.
@@ -40,7 +41,10 @@ class GitTool(SCMTool):
 
     def __init__(self, repository):
         SCMTool.__init__(self, repository)
-        self.client = GitClient(repository.path, repository.raw_file_url)
+        self.client = GitClient(repository.path,
+                                repository.raw_file_url,
+                                repository.username,
+                                repository.password)
 
     def get_file(self, path, revision=HEAD):
         if revision == PRE_CREATION:
@@ -195,7 +199,7 @@ class GitClient(object):
         r'^(?P<username>[A-Za-z0-9_\.-]+@)?(?P<hostname>[A-Za-z0-9_\.-]+):'
         r'(?P<path>.*)')
 
-    def __init__(self, path, raw_file_url=None):
+    def __init__(self, path, raw_file_url=None, username=None, password=None):
         if not is_exe_in_path('git'):
             # This is technically not the right kind of error, but it's the
             # pattern we use with all the other tools.
@@ -204,6 +208,8 @@ class GitClient(object):
         self.path = self._normalize_git_url(path)
         self.raw_file_url = raw_file_url
         self.git_dir = None
+        self.username = username
+        self.password = password
 
         url_parts = urlparse.urlparse(self.path)
 
@@ -249,7 +255,8 @@ class GitClient(object):
             # First, try to grab the file remotely.
             try:
                 url = self._build_raw_url(path, revision)
-                return urllib2.urlopen(url).read()
+                req = self._build_http_req(url)
+                return urllib2.urlopen(req).read()
             except Exception, e:
                 logging.error("Git: Error fetching file from %s: %s" % (url, e))
                 raise SCMError("Error fetching file from %s: %s" % (url, e))
@@ -261,7 +268,8 @@ class GitClient(object):
             # First, try to grab the file remotely.
             try:
                 url = self._build_raw_url(path, revision)
-                return urllib2.urlopen(url).geturl()
+                req = self._build_http_req(url)
+                return urllib2.urlopen(req).geturl()
             except urllib2.HTTPError, e:
                 if e.code != 404:
                     logging.error("Git: HTTP error code %d when fetching "
@@ -273,6 +281,14 @@ class GitClient(object):
         else:
             contents = self._cat_file(path, revision, "-t")
             return contents and contents.strip() == "blob"
+
+    def _build_http_req(self, url):
+        req = urllib2.Request(url)
+        base64string = base64.encodestring('%s:%s' % (self.username, self.password))[:-1]
+        authheader =  "Basic %s" % base64string
+        req.add_header("Authorization", authheader)
+
+        return req
 
     def _build_raw_url(self, path, revision):
         url = self.raw_file_url
